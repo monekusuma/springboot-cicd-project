@@ -1,0 +1,161 @@
+pipeline {
+
+    agent any
+
+    environment {
+
+        IMAGE_NAME = "kusuma3121/springboot"
+        AWS_REGION = "ap-south-1"
+        EKS_CLUSTER = "devops-eks"
+
+        AWS_SHARED_CREDENTIALS_FILE = "/var/lib/jenkins/.aws/credentials"
+        AWS_CONFIG_FILE = "/var/lib/jenkins/.aws/config"
+        KUBECONFIG = "/var/lib/jenkins/.kube/config"
+    }
+
+    stages {
+
+
+        stage('Checkout') {
+
+            steps {
+
+                git branch: 'main',
+                url: 'https://github.com/monekusuma/springboot-cicd-project.git'
+            }
+        }
+
+
+        stage('Build') {
+
+            steps {
+
+                sh '''
+                mvn clean package
+                '''
+            }
+        }
+
+
+        stage('Docker Build') {
+
+            steps {
+
+                sh """
+                docker build \
+                -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                """
+            }
+        }
+
+
+        stage('Docker Push') {
+
+            steps {
+
+                script {
+
+                    docker.withRegistry(
+                        'https://index.docker.io/v1/',
+                        'dockerhub'
+                    ) {
+
+                        sh """
+                        docker push ${IMAGE_NAME}:${BUILD_NUMBER}
+                        """
+                    }
+                }
+            }
+        }
+
+
+        stage('Debug AWS') {
+
+            steps {
+
+                sh '''
+                echo $AWS_SHARED_CREDENTIALS_FILE
+                echo $AWS_CONFIG_FILE
+
+                aws sts get-caller-identity
+                '''
+            }
+        }
+
+
+        stage('Configure EKS') {
+
+            steps {
+
+                sh """
+                aws eks update-kubeconfig \
+                --region ${AWS_REGION} \
+                --name ${EKS_CLUSTER}
+                """
+            }
+        }
+
+
+        stage('Update Manifest') {
+
+            steps {
+
+                sh """
+                sed -i 's#kusuma3121/springboot:.*#kusuma3121/springboot:${BUILD_NUMBER}#g' kubernetes/deployment.yml
+
+                cat kubernetes/deployment.yml
+                """
+            }
+        }
+
+
+        stage('Deploy To EKS') {
+
+            steps {
+
+                sh '''
+                kubectl apply -f kubernetes/namespace.yml
+
+                kubectl apply -f kubernetes/configmap.yml
+
+                kubectl apply -f kubernetes/deployment.yml
+
+                kubectl apply -f kubernetes/service.yml
+
+                kubectl apply -f kubernetes/hpa.yml
+                '''
+            }
+        }
+
+
+        stage('Verify Deployment') {
+
+            steps {
+
+                sh '''
+                kubectl rollout status deployment/spring-boot-app -n devops
+
+                kubectl get deployments -n devops
+
+                kubectl get pods -n devops
+
+                kubectl get svc -n devops
+                '''
+            }
+        }
+    }
+
+
+    post {
+
+        success {
+
+            echo 'Application deployed successfully to EKS'
+        }
+
+        failure {
+
+            echo 'Pipeline failed'
+        }
+    }
+} 
